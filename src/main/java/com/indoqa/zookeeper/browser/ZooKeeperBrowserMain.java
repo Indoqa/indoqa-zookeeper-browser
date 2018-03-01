@@ -33,11 +33,11 @@ public class ZooKeeperBrowserMain implements Watcher, NodeProvider {
 
     private static final int DEFAULT_SESSION_TIMEOUT = 30000;
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(ZooKeeperBrowserMain.class);
+
     private ZooKeeper zooKeeper;
 
     private ZooKeeperBrowserViewer viewer;
-
-    private final Logger logger = LoggerFactory.getLogger(this.getClass());
 
     private String connectString;
 
@@ -49,7 +49,7 @@ public class ZooKeeperBrowserMain implements Watcher, NodeProvider {
 
     public static void main(String[] args) {
         if (args.length != 1) {
-            System.err.println("Usage: ZooKeeperBrowserMain <connect-string>");
+            LOGGER.error("Usage: ZooKeeperBrowserMain <connect-string>");
             return;
         }
 
@@ -126,29 +126,29 @@ public class ZooKeeperBrowserMain implements Watcher, NodeProvider {
 
     @Override
     public void process(WatchedEvent event) {
-        this.logger.info("Received {}", event);
+        this.LOGGER.info("Received {}", event);
         if (event.getType() != EventType.None) {
             return;
         }
 
         switch (event.getState()) {
             case Disconnected:
-                this.logger.info("ZooKeeper session was disconnected.");
+                this.LOGGER.info("ZooKeeper session was disconnected.");
                 break;
 
             case Expired:
-                this.logger.info("ZooKeeper session was expired.");
+                this.LOGGER.info("ZooKeeper session was expired.");
                 this.connect();
                 break;
 
             case ConnectedReadOnly:
             case SyncConnected:
-                this.logger.info("Connected to the ZooKeeper ensemble.");
+                this.LOGGER.info("Connected to the ZooKeeper ensemble.");
                 this.updateContent();
                 break;
 
             default:
-                this.logger.info("Unhandled event of type {} and state {}", event.getType(), event.getState());
+                this.LOGGER.info("Unhandled event of type {} and state {}", event.getType(), event.getState());
                 break;
         }
     }
@@ -167,7 +167,7 @@ public class ZooKeeperBrowserMain implements Watcher, NodeProvider {
             this.zooKeeper = new ZooKeeper(this.connectString, DEFAULT_SESSION_TIMEOUT, this);
             this.viewer.setConnectString(this.connectString);
         } catch (Exception e) {
-            this.logger.error("Could not connect to ZooKeeper ensemble.", e);
+            this.LOGGER.error("Could not connect to ZooKeeper ensemble.", e);
         }
     }
 
@@ -199,7 +199,7 @@ public class ZooKeeperBrowserMain implements Watcher, NodeProvider {
                 this.zooKeeper.close();
                 this.viewer.setConnectString("Not connected");
             } catch (Exception e) {
-                this.logger.error("Could not close ZooKeeper client.", e);
+                this.LOGGER.error("Could not close ZooKeeper client.", e);
             }
         }
 

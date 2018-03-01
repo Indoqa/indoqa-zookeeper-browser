@@ -18,6 +18,7 @@ package com.indoqa.zookeeper.browser;
 
 import java.awt.Component;
 import java.text.MessageFormat;
+import java.util.Locale;
 
 import javax.swing.JTree;
 import javax.swing.tree.DefaultTreeCellRenderer;
@@ -45,9 +46,9 @@ public class ZooKeeperTreeNodeRenderer extends DefaultTreeCellRenderer {
     }
 
     private String getContainerValue(ZooKeeperTreeNode zooKeeperTreeNode) {
-        return MessageFormat.format("{0} (Children: {1} / {2}{3})", zooKeeperTreeNode.getPathName(),
-            zooKeeperTreeNode.getDirectChildCount(), zooKeeperTreeNode.getTotalChildCount(),
-            zooKeeperTreeNode.isFullyExplored() ? "" : "*");
+        MessageFormat temp = new MessageFormat("{0} (Children: {1} / {2}{3})", Locale.ROOT);
+        return temp.format(new Object[] {zooKeeperTreeNode.getPathName(), zooKeeperTreeNode.getDirectChildCount(),
+            zooKeeperTreeNode.getTotalChildCount(), zooKeeperTreeNode.isFullyExplored() ? "" : "*"});
     }
 
     private String getLeafValue(ZooKeeperTreeNode zooKeeperTreeNode) {
