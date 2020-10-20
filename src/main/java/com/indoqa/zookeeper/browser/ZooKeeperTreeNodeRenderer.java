@@ -34,11 +34,23 @@ public class ZooKeeperTreeNodeRenderer extends DefaultTreeCellRenderer {
             ZooKeeperTreeNode zooKeeperTreeNode = (ZooKeeperTreeNode) value;
 
             if (leaf) {
-                return super.getTreeCellRendererComponent(tree, this.getLeafValue(zooKeeperTreeNode), sel, expanded, leaf, row,
+                return super.getTreeCellRendererComponent(
+                    tree,
+                    this.getLeafValue(zooKeeperTreeNode),
+                    sel,
+                    expanded,
+                    leaf,
+                    row,
                     hasFocus);
             }
 
-            return super.getTreeCellRendererComponent(tree, this.getContainerValue(zooKeeperTreeNode), sel, expanded, leaf, row,
+            return super.getTreeCellRendererComponent(
+                tree,
+                this.getContainerValue(zooKeeperTreeNode),
+                sel,
+                expanded,
+                leaf,
+                row,
                 hasFocus);
         }
 
@@ -46,12 +58,19 @@ public class ZooKeeperTreeNodeRenderer extends DefaultTreeCellRenderer {
     }
 
     private String getContainerValue(ZooKeeperTreeNode zooKeeperTreeNode) {
-        MessageFormat temp = new MessageFormat("{0} (Children: {1} / {2}{3})", Locale.ROOT);
-        return temp.format(new Object[] {zooKeeperTreeNode.getPathName(), zooKeeperTreeNode.getDirectChildCount(),
-            zooKeeperTreeNode.getTotalChildCount(), zooKeeperTreeNode.isFullyExplored() ? "" : "*"});
+        return new MessageFormat("{0} (Children: {1} / {2}{3})", Locale.ENGLISH).format(
+            new Object[] {
+                zooKeeperTreeNode.getPathName(),
+                zooKeeperTreeNode.getChildCount(),
+                zooKeeperTreeNode.getTotalChildCount(),
+                zooKeeperTreeNode.isFullyExplored() ? "" : "*"});
     }
 
     private String getLeafValue(ZooKeeperTreeNode zooKeeperTreeNode) {
-        return zooKeeperTreeNode.getPathName();
+        if (zooKeeperTreeNode.isFullyExplored()) {
+            return zooKeeperTreeNode.getPathName();
+        }
+
+        return zooKeeperTreeNode.getPathName() + "*";
     }
 }

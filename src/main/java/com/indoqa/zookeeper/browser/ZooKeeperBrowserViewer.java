@@ -16,46 +16,88 @@
  */
 package com.indoqa.zookeeper.browser;
 
-import java.awt.BorderLayout;
-import java.awt.FlowLayout;
-import java.awt.event.ActionEvent;
+import static java.awt.event.InputEvent.SHIFT_MASK;
+
+import java.awt.*;
+import java.awt.event.*;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.text.NumberFormat;
 import java.util.*;
+import java.util.List;
 import java.util.Timer;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 
 import javax.swing.*;
+import javax.swing.JToggleButton.ToggleButtonModel;
+import javax.swing.border.EmptyBorder;
 import javax.swing.event.TreeExpansionEvent;
 import javax.swing.event.TreeSelectionEvent;
 import javax.swing.event.TreeSelectionListener;
 import javax.swing.event.TreeWillExpandListener;
-import javax.swing.tree.*;
+import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.DefaultTreeModel;
+import javax.swing.tree.ExpandVetoException;
+import javax.swing.tree.TreePath;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelectionListener {
 
+    private static final String BASE_TITLE = "Indoqa ZooKeeper Browser";
+    private static final int DEFAULT_MAX_CHILDREN = 100;
+    private static final int MAX_UPDATE_TIME = 500;
+
+    private static final int WATCH_DOG_UPDATE_DELAY = 100;
+    private static final int CONNECT_TIMEOUT = 30_000;
+
     private final Logger logger = LoggerFactory.getLogger(this.getClass());
 
     private JFrame frame;
-
     private JTree tree;
+
     private DefaultTreeModel treeModel;
     private JTextArea textArea;
     private NodeProvider nodeProvider;
+    private JComboBox<String> cbxHost;
 
+    private String selectedZookeeperPath;
+    private Set<ComponentEnabler> componentEnablers = new HashSet<>();
+
+    private JToggleButton tglConnect;
+
+    private final BlockingQueue<ZooKeeperTreeNode> pendingNodes = new LinkedBlockingQueue<>();
     private final Timer timer = new Timer(true);
 
     private boolean autoUpdate;
-    private String selectedZookeeperPath;
+    private Set<String> knownHosts = new TreeSet<>();
 
-    private Set<UpdateableButtonModel> buttonModels = new HashSet<>();
+    private ConnectionWatchDog watchDog;
+    private JProgressBar pgrLoading;
+    private Operation currentOperation;
 
     public ZooKeeperBrowserViewer() {
-        this.frame = new JFrame("ZooKeeper Browser");
+        this.frame = new JFrame();
         this.frame.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         this.frame.setLayout(new BorderLayout());
+        this.frame.setIconImage(Toolkit.getDefaultToolkit().getImage(this.getClass().getResource("/icon.png")));
+        this.frame.addWindowListener(new WindowAdapter() {
+
+            @Override
+            public void windowClosed(WindowEvent e) {
+                ZooKeeperBrowserViewer.this.disconnect();
+            }
+        });
+
+        this.knownHosts.addAll(this.readKnownHosts());
 
         this.frame.add(this.createActionPanel(), BorderLayout.NORTH);
         this.frame.add(this.createMainPanel(), BorderLayout.CENTER);
@@ -71,11 +113,94 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
             public void run() {
                 ZooKeeperBrowserViewer.this.autoUpdate();
             }
-        }, 1000, 1000);
+        }, 5000, 5000);
+
+        this.timer.schedule(new TimerTask() {
+
+            @Override
+            public void run() {
+                ZooKeeperBrowserViewer.this.updatePendingNodes();
+            }
+        }, 10, 10);
+
+        Thread.setDefaultUncaughtExceptionHandler(this::uncaughtException);
+    }
+
+    private static Path getKnownHostsFile() {
+        return Paths.get(System.getProperty("user.home"), ".indoqa-zookeeper-browser/known-hosts.txt").toAbsolutePath();
+    }
+
+    public void clearContent() {
+        this.tree.setModel(new DefaultTreeModel(null));
+        this.resizeTree();
+    }
+
+    public void connectionStateChanged() {
+        ConnectionState connectionState = this.nodeProvider.getConnectionState();
+        String zookeeperHost = this.nodeProvider.getZookeeperHost();
+
+        this.tglConnect.setText(connectionState.name());
+        this.componentEnablers.forEach(ComponentEnabler::update);
+
+        switch (connectionState) {
+            case INITIALIZING:
+                this.cbxHost.setEnabled(false);
+                this.tglConnect.setEnabled(false);
+                this.tglConnect.setSelected(true);
+                this.updateTitle(null);
+                this.clearContent();
+                break;
+
+            case DISCONNECTING:
+                this.cbxHost.setEnabled(false);
+                this.tglConnect.setEnabled(false);
+                this.tglConnect.setSelected(true);
+                this.updateTitle(null);
+                this.clearContent();
+                break;
+
+            case DISCONNECTED:
+                this.cbxHost.setEnabled(true);
+                this.tglConnect.setEnabled(true);
+                this.tglConnect.setSelected(false);
+                this.tglConnect.setText("Connect");
+                this.updateTitle(null);
+                this.clearContent();
+                break;
+
+            case CONNECTING:
+                this.cbxHost.setEnabled(false);
+                this.tglConnect.setEnabled(true);
+                this.tglConnect.setSelected(true);
+                this.updateTitle(zookeeperHost);
+                break;
+
+            case CONNECTED:
+                if (this.watchDog != null) {
+                    this.watchDog.cancel();
+                }
+
+                this.cbxHost.setEnabled(false);
+                this.tglConnect.setEnabled(true);
+                this.tglConnect.setSelected(true);
+                this.updateTitle(zookeeperHost);
+
+                this.addKnownHost(zookeeperHost);
+
+                break;
+
+            default:
+                break;
+        }
     }
 
     public Set<String> getExpandedZooKeeperPaths() {
         Set<String> result = new TreeSet<>();
+
+        if (this.tree == null || this.tree.getModel() == null || this.tree.getModel().getRoot() == null) {
+            result.add("/");
+            return result;
+        }
 
         Enumeration<TreePath> expandedDescendants = this.tree.getExpandedDescendants(new TreePath(this.tree.getModel().getRoot()));
         if (expandedDescendants != null) {
@@ -89,8 +214,18 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         return result;
     }
 
-    public void setConnectString(String connectString) {
-        this.frame.setTitle("ZooKeeper Browser - " + connectString);
+    public void operationCompleted(Operation operation, String path) {
+        this.currentOperation = null;
+
+        this.pgrLoading.setVisible(false);
+        this.componentEnablers.forEach(ComponentEnabler::update);
+    }
+
+    public void operationStarted(Operation operation, String path) {
+        this.currentOperation = operation;
+
+        this.pgrLoading.setVisible(true);
+        this.componentEnablers.forEach(ComponentEnabler::update);
     }
 
     @SuppressWarnings("unchecked")
@@ -106,12 +241,9 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         }
     }
 
-    public void setModel(TreeModel model) {
-        this.tree.setModel(model);
-    }
-
     public void setNodeProvider(NodeProvider nodeProvider) {
         this.nodeProvider = nodeProvider;
+        this.connectionStateChanged();
     }
 
     @Override
@@ -120,38 +252,47 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
     }
 
     @Override
-    public void treeWillExpand(TreeExpansionEvent event) throws ExpandVetoException {
-        TreePath path = event.getPath();
-        ZooKeeperTreeNode node = (ZooKeeperTreeNode) path.getLastPathComponent();
-
-        if (node.isLeaf() || node.getChildCount() > 0) {
-            return;
-        }
-
-        List<ZooKeeperTreeNode> children = this.nodeProvider.getChildren(node.getZooKeeperPath());
-        for (ZooKeeperTreeNode eachChild : children) {
-            this.treeModel.insertNodeInto(eachChild, node, node.getChildCount());
-        }
-
-        this.treeModel.nodeChanged(node);
+    public void treeWillExpand(TreeExpansionEvent event) {
+        ZooKeeperTreeNode node = (ZooKeeperTreeNode) event.getPath().getLastPathComponent();
+        this.buildChildren(node);
     }
 
     public void updateContent() {
-        Set<String> expandedZooKeeperPaths = this.getExpandedZooKeeperPaths();
-
-        ZooKeeperTreeNode rootNode = this.nodeProvider.getNode("/");
-        this.treeModel = new DefaultTreeModel(rootNode);
-
-        List<ZooKeeperTreeNode> children = this.nodeProvider.getChildren("/");
-        for (ZooKeeperTreeNode eachChild : children) {
-            this.treeModel.insertNodeInto(eachChild, rootNode, rootNode.getChildCount());
+        if (SwingUtilities.isEventDispatchThread()) {
+            new Thread(this::updateContent).start();
+            return;
         }
 
-        this.tree.setModel(this.treeModel);
-        this.resizeTree();
+        this.operationStarted(Operation.LOAD_CHILDREN, "/");
 
-        for (String eachExpandedZooKeeperPath : expandedZooKeeperPaths) {
-            SwingUtilities.invokeLater(() -> this.expandZooKeeperPath(eachExpandedZooKeeperPath));
+        this.pendingNodes.clear();
+        Set<String> expandedZooKeeperPaths = this.getExpandedZooKeeperPaths();
+
+        try {
+            ZooKeeperTreeNode rootNode = this.nodeProvider.getNode("/");
+            this.pendingNodes.add(rootNode);
+
+            for (String eachExpandedPath : expandedZooKeeperPaths) {
+                ZooKeeperTreeNode node = rootNode.getNodeWithPath(eachExpandedPath);
+                if (node != null) {
+                    this.buildChildren(node);
+                }
+            }
+
+            this.treeModel = new DefaultTreeModel(rootNode);
+
+            SwingUtilities.invokeLater(() -> {
+                this.tree.setModel(this.treeModel);
+                this.resizeTree();
+            });
+        } finally {
+            SwingUtilities.invokeLater(() -> {
+                for (String eachPath : expandedZooKeeperPaths) {
+                    this.expandZooKeeperPath(eachPath);
+                }
+            });
+
+            this.operationCompleted(Operation.LOAD_CHILDREN, "/");
         }
     }
 
@@ -178,35 +319,115 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         }
     }
 
+    protected void disconnect() {
+        ZooKeeperBrowserViewer.this.nodeProvider.disconnect();
+    }
+
     protected void toggleAutoUpdate() {
         this.autoUpdate = !this.autoUpdate;
     }
 
+    protected void updatePendingNodes() {
+        if (this.pendingNodes.isEmpty()) {
+            return;
+        }
+
+        Set<ZooKeeperTreeNode> affectedNode = new HashSet<>();
+
+        long start = System.currentTimeMillis();
+        while (true) {
+            long elapsed = System.currentTimeMillis() - start;
+            if (elapsed > MAX_UPDATE_TIME) {
+                break;
+            }
+
+            ZooKeeperTreeNode node = this.pendingNodes.poll();
+            if (node == null) {
+                break;
+            }
+
+            this.nodeProvider.updateNodeStats(node);
+
+            while (node != null) {
+                affectedNode.add(node);
+                node = (ZooKeeperTreeNode) node.getParent();
+            }
+        }
+
+        SwingUtilities.invokeLater(() -> {
+            for (ZooKeeperTreeNode eachNode : affectedNode) {
+                this.treeModel.nodeChanged(eachNode);
+            }
+            this.resizeTree();
+        });
+    }
+
+    private void addKnownHost(String zookeeperHost) {
+        if (this.knownHosts.add(zookeeperHost)) {
+            this.writeKnownHosts();
+        }
+    }
+
+    private void buildChildren(ZooKeeperTreeNode node) {
+        if (node.getChildCount() > 0) {
+            return;
+        }
+
+        List<ZooKeeperTreeNode> children = this.nodeProvider.getChildren(node, DEFAULT_MAX_CHILDREN);
+
+        for (ZooKeeperTreeNode eachChild : children) {
+            node.add(eachChild);
+            this.pendingNodes.add(eachChild);
+        }
+    }
+
+    private boolean canReload() {
+        return this.nodeProvider.getConnectionState() == ConnectionState.CONNECTED && this.currentOperation == null;
+    }
+
     private JPanel createActionPanel() {
-        JPanel result = new JPanel();
+        JPanel result = new JPanel(new GridLayout(2, 1));
 
-        result.setLayout(new FlowLayout(FlowLayout.LEFT));
+        JPanel connectPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        result.add(connectPanel);
 
-        result.add(new JButton(new AbstractAction("Reload") {
+        this.cbxHost = new JComboBox<>();
+        this.cbxHost.setEditable(true);
+        this.cbxHost.setModel(new DefaultComboBoxModel<>(this.knownHosts.toArray(new String[0])));
+        this.cbxHost.setPrototypeDisplayValue("server-a:2181,server-b:2181,server-c:2181/directory");
+        new EditableComboboxHandler<String>().install(this.cbxHost, this::removeKnownHost);
+        connectPanel.add(this.cbxHost);
 
-            private static final long serialVersionUID = 1L;
+        this.tglConnect = new JToggleButton("Connect");
+        connectPanel.add(this.tglConnect);
+        this.tglConnect.setPreferredSize(new Dimension(150, this.tglConnect.getPreferredSize().height));
+        this.tglConnect.addActionListener(this::toggleConnect);
 
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                ZooKeeperBrowserViewer.this.updateContent();
-            }
-        }));
+        JPanel actionsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        result.add(actionsPanel);
 
-        result.add(new JToggleButton(new AbstractAction("Auto-Reload") {
+        JButton btnReload = new JButton("Reload");
+        btnReload.addActionListener(e -> this.updateContent());
+        actionsPanel.add(btnReload);
+        this.componentEnablers.add(new ComponentEnabler(btnReload, this::canReload));
 
-            private static final long serialVersionUID = 1L;
+        JToggleButton tglAutoReload = new JToggleButton("Auto-Reload");
+        tglAutoReload.addActionListener(e -> this.toggleAutoUpdate());
+        actionsPanel.add(tglAutoReload);
+        this.componentEnablers.add(new ComponentEnabler(tglAutoReload, this::canReload));
 
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                ZooKeeperBrowserViewer.this.toggleAutoUpdate();
-            }
-        }));
+        this.pgrLoading = new JProgressBar();
+        this.pgrLoading.setIndeterminate(true);
+        this.pgrLoading.setVisible(false);
+        actionsPanel.add(this.pgrLoading);
 
+        return result;
+    }
+
+    private JButton createButton(String name, ActionListener action, BooleanSupplier enabler) {
+        JButton result = new JButton(name);
+        result.addActionListener(action);
+        this.componentEnablers.add(new ComponentEnabler(result, enabler));
         return result;
     }
 
@@ -216,31 +437,26 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         this.textArea = new JTextArea();
         result.add(new JScrollPane(this.textArea), BorderLayout.CENTER);
 
-        JPanel pnlButtons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 6));
-        pnlButtons.add(this.createReloadContentButton());
-        pnlButtons.add(this.createSaveContentButton());
+        JPanel pnlButtons = new JPanel(new BorderLayout(6, 6));
+        pnlButtons.setBorder(new EmptyBorder(6, 6, 6, 6));
+        pnlButtons.add(this.createButton("Reload", event -> this.loadSelectedContent(), this::hasSelectedPath), BorderLayout.WEST);
+        pnlButtons.add(this.createButton("Save", event -> this.saveContent(), this::hasSelectedPath), BorderLayout.EAST);
         result.add(pnlButtons, BorderLayout.SOUTH);
 
         return result;
     }
 
-    private JButton createDeleteNodeButton() {
-        JButton result = new JButton("Delete");
-
-        UpdateableButtonModel model = new UpdateableButtonModel(() -> this.getSelectedZookeeperPath() != null);
-        this.buttonModels.add(model);
-        result.setModel(model);
-        result.addActionListener(event -> this.deleteNode());
-
-        return result;
-    }
-
     private JComponent createMainPanel() {
-        JSplitPane result = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
+        JPanel result = new JPanel(new BorderLayout(6, 6));
+        result.setBorder(new EmptyBorder(6, 6, 6, 6));
 
-        result.setLeftComponent(this.createTreePanel());
-        result.setRightComponent(this.createContentPanel());
-        result.setDividerLocation(400);
+        JSplitPane splitPanel = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
+
+        splitPanel.setLeftComponent(this.createTreePanel());
+        splitPanel.setRightComponent(this.createContentPanel());
+        splitPanel.setDividerLocation(400);
+
+        result.add(splitPanel, BorderLayout.CENTER);
 
         return result;
     }
@@ -259,43 +475,11 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         this.updateContent();
     }
 
-    private JButton createNewNodeButton() {
-        JButton result = new JButton("New Child");
-
-        UpdateableButtonModel buttonModel = new UpdateableButtonModel(() -> this.getSelectedZookeeperPath() != null);
-        this.buttonModels.add(buttonModel);
-        result.setModel(buttonModel);
-        result.addActionListener(event -> this.createNewNode());
-
-        return result;
-    }
-
-    private JButton createReloadContentButton() {
-        JButton result = new JButton("Reload");
-
-        UpdateableButtonModel buttonModel = new UpdateableButtonModel(() -> this.getSelectedZookeeperPath() != null);
-        this.buttonModels.add(buttonModel);
-        result.setModel(buttonModel);
-        result.addActionListener(event -> this.loadSelectedContent());
-
-        return result;
-    }
-
-    private JButton createSaveContentButton() {
-        JButton result = new JButton("Save");
-
-        UpdateableButtonModel buttonModel = new UpdateableButtonModel(() -> this.getSelectedZookeeperPath() != null);
-        this.buttonModels.add(buttonModel);
-        result.setModel(buttonModel);
-        result.addActionListener(event -> this.saveContent());
-
-        return result;
-    }
-
     private JPanel createTreePanel() {
         JPanel result = new JPanel(new BorderLayout());
 
-        this.tree = new JTree(new DefaultTreeModel(new ZooKeeperTreeNode(new NodeDetails())));
+        this.treeModel = new DefaultTreeModel(new ZooKeeperTreeNode(new NodeDetails()));
+        this.tree = new JTree(this.treeModel);
         this.tree.setShowsRootHandles(true);
         this.tree.addTreeWillExpandListener(this);
         this.tree.addTreeSelectionListener(this);
@@ -303,9 +487,10 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         this.tree.setRowHeight(20);
         result.add(new JScrollPane(this.tree), BorderLayout.CENTER);
 
-        JPanel pnlButtons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 6));
-        pnlButtons.add(this.createDeleteNodeButton());
-        pnlButtons.add(this.createNewNodeButton());
+        JPanel pnlButtons = new JPanel(new BorderLayout(6, 6));
+        pnlButtons.setBorder(new EmptyBorder(6, 6, 6, 6));
+        pnlButtons.add(this.createButton("Delete", event -> this.deleteNode(), this::hasSelectedPath), BorderLayout.WEST);
+        pnlButtons.add(this.createButton("New Child", event -> this.createNewNode(), this::hasSelectedPath), BorderLayout.EAST);
         result.add(pnlButtons, BorderLayout.SOUTH);
 
         return result;
@@ -316,34 +501,39 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
             return;
         }
 
-        if (JOptionPane.showConfirmDialog(this.frame,
-            "Delete node '" + this.selectedZookeeperPath + "'?\n\nThere is no way to undo this!", "Delete node",
+        DeleteNodePanel panel = new DeleteNodePanel(
+            "Delete node '" + this.selectedZookeeperPath + "'?\n\nThere is no way to undo this!");
+
+        if (JOptionPane.showConfirmDialog(
+            this.frame,
+            panel,
+            "Delete node",
             JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) {
             return;
         }
 
-        this.nodeProvider.deleteNode(this.selectedZookeeperPath);
+        if (panel.isRecursively()) {
+            this.nodeProvider.deleteNodeRecursively(this.selectedZookeeperPath);
+        } else {
+            this.nodeProvider.deleteNode(this.selectedZookeeperPath);
+        }
+
         this.updateContent();
     }
 
-    @SuppressWarnings("unchecked")
     private void expandZooKeeperPath(String zooKeeperPath) {
-        DefaultMutableTreeNode rootNode = (DefaultMutableTreeNode) this.treeModel.getRoot();
-        Enumeration<ZooKeeperTreeNode> nodes = rootNode.breadthFirstEnumeration();
-        while (nodes.hasMoreElements()) {
-            ZooKeeperTreeNode treeNode = nodes.nextElement();
+        ZooKeeperTreeNode rootNode = (ZooKeeperTreeNode) this.treeModel.getRoot();
+        ZooKeeperTreeNode node = rootNode.getNodeWithPath(zooKeeperPath);
 
-            if (zooKeeperPath.equals(treeNode.getZooKeeperPath())) {
-                this.tree.expandPath(new TreePath(treeNode.getPath()));
-                break;
-            }
+        if (node != null) {
+            this.tree.expandPath(new TreePath(node.getPath()));
         }
 
         this.resizeTree();
     }
 
-    private String getSelectedZookeeperPath() {
-        return this.selectedZookeeperPath;
+    private boolean hasSelectedPath() {
+        return this.selectedZookeeperPath != null;
     }
 
     private void loadSelectedContent() {
@@ -361,6 +551,30 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
             this.textArea.setText("");
         } else {
             this.textArea.setText(new String(content, StandardCharsets.UTF_8));
+        }
+    }
+
+    private List<String> readKnownHosts() {
+        Path path = getKnownHostsFile();
+
+        if (Files.exists(path)) {
+            try {
+                return Files.readAllLines(path, StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                JOptionPane.showMessageDialog(
+                    this.frame,
+                    "Failed to read known hosts.",
+                    "Could not read known hosts from " + path + ": " + e.getMessage(),
+                    JOptionPane.ERROR_MESSAGE);
+            }
+        }
+
+        return Collections.emptyList();
+    }
+
+    private void removeKnownHost(String host) {
+        if (this.knownHosts.remove(host)) {
+            this.writeKnownHosts();
         }
     }
 
@@ -383,9 +597,67 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
 
     private void setSelectedZookeeperPath(String selectedZookeeperPath) {
         this.selectedZookeeperPath = selectedZookeeperPath;
+        this.componentEnablers.forEach(ComponentEnabler::update);
+    }
 
-        for (UpdateableButtonModel eachButtonModel : this.buttonModels) {
-            eachButtonModel.update();
+    private void toggleConnect(ActionEvent event) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            new Thread(() -> this.toggleConnect(event)).start();
+            return;
+        }
+
+        if (this.tglConnect.isSelected()) {
+            this.watchDog = new ConnectionWatchDog(CONNECT_TIMEOUT, this::watchDogCountDown);
+            this.timer.scheduleAtFixedRate(this.watchDog, 0, WATCH_DOG_UPDATE_DELAY);
+
+            String zookeeperHost = (String) this.cbxHost.getSelectedItem();
+            zookeeperHost = zookeeperHost.trim();
+            this.nodeProvider.connectTo(zookeeperHost);
+        } else {
+            if (this.watchDog != null) {
+                this.watchDog.abortImmediately();
+            } else {
+                this.nodeProvider.disconnect();
+            }
+        }
+    }
+
+    private void uncaughtException(Thread thread, Throwable throwable) {
+        JOptionPane.showMessageDialog(this.frame, throwable.toString(), "Error", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private void updateTitle(String host) {
+        if (host == null || host.trim().isEmpty()) {
+            this.frame.setTitle(BASE_TITLE);
+        } else {
+            this.frame.setTitle(BASE_TITLE + " - " + host);
+        }
+    }
+
+    private void watchDogCountDown(long remaining) {
+        if (remaining <= 0) {
+            this.nodeProvider.disconnect();
+            return;
+        }
+
+        String remainingSeconds = NumberFormat.getIntegerInstance(Locale.ENGLISH).format((remaining + 999) / 1_000L);
+
+        ConnectionState connectionState = this.nodeProvider.getConnectionState();
+        this.tglConnect.setText(connectionState + " ... (" + remainingSeconds + ")");
+    }
+
+    private void writeKnownHosts() {
+        Path path = getKnownHostsFile();
+
+        try {
+            Files.createDirectories(path.getParent());
+            Files.write(path, this.knownHosts, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            JOptionPane.showMessageDialog(
+                this.frame,
+                "Could not write known hosts",
+                "Could not write known hosts to " + path + ": " + e.getMessage(),
+                JOptionPane.ERROR_MESSAGE);
         }
     }
 
@@ -404,6 +676,96 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
 
         public void update() {
             this.setEnabled(this.supplier.getAsBoolean());
+        }
+    }
+
+    public static final class UpdateableToggleButtonModel extends ToggleButtonModel {
+
+        private static final long serialVersionUID = 1L;
+
+        private transient BooleanSupplier supplier;
+
+        public UpdateableToggleButtonModel(BooleanSupplier supplier) {
+            super();
+
+            this.supplier = supplier;
+            this.update();
+        }
+
+        public void update() {
+            this.setEnabled(this.supplier.getAsBoolean());
+        }
+    }
+
+    protected static class ComponentEnabler {
+
+        private final JComponent component;
+        private final BooleanSupplier booleanSupplier;
+
+        public ComponentEnabler(JComponent component, BooleanSupplier booleanSupplier) {
+            super();
+            this.component = component;
+            this.booleanSupplier = booleanSupplier;
+        }
+
+        public void update() {
+            this.component.setEnabled(this.booleanSupplier.getAsBoolean());
+        }
+    }
+
+    protected static class EditableComboboxHandler<T> {
+
+        private JComboBox<T> cbxTarget;
+        private Consumer<T> removeValue;
+
+        public void install(JComboBox<T> comboBox, Consumer<T> removeValue) {
+            this.cbxTarget = comboBox;
+            this.removeValue = removeValue;
+
+            this.cbxTarget.getEditor().getEditorComponent().addKeyListener(new KeyAdapter() {
+
+                @Override
+                public void keyTyped(KeyEvent e) {
+                    if (comboBox.isPopupVisible() && e.getModifiers() == SHIFT_MASK && KeyEvent.VK_DELETE == e.getKeyChar()) {
+                        EditableComboboxHandler.this.removeCurrentSelection();
+                    }
+                }
+            });
+        }
+
+        protected void removeCurrentSelection() {
+            T item = this.cbxTarget.getModel().getElementAt(this.cbxTarget.getSelectedIndex());
+            this.cbxTarget.removeItem(item);
+            this.removeValue.accept(item);
+        }
+    }
+
+    private static class ConnectionWatchDog extends TimerTask {
+
+        private final long latestConnectTime;
+        private final LongConsumer remainingTimeConsumer;
+
+        public ConnectionWatchDog(long timeout, LongConsumer remainingTimeConsumer) {
+            super();
+
+            this.latestConnectTime = System.currentTimeMillis() + timeout;
+            this.remainingTimeConsumer = remainingTimeConsumer;
+        }
+
+        public void abortImmediately() {
+            this.cancel();
+            this.remainingTimeConsumer.accept(-1);
+        }
+
+        @Override
+        public void run() {
+            long remainingTime = this.latestConnectTime - System.currentTimeMillis();
+
+            if (remainingTime <= 0) {
+                this.cancel();
+            }
+
+            this.remainingTimeConsumer.accept(remainingTime);
         }
     }
 }

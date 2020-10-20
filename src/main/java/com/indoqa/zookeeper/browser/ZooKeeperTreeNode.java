@@ -44,16 +44,26 @@ public class ZooKeeperTreeNode extends DefaultMutableTreeNode {
         return (ZooKeeperTreeNode) super.getChildAt(index);
     }
 
-    public int getDirectChildCount() {
-        if (this.getChildCount() == 0) {
-            return this.getNodeDetails().getChildren();
-        }
-
-        return this.getChildCount();
-    }
-
     public NodeDetails getNodeDetails() {
         return (NodeDetails) this.getUserObject();
+    }
+
+    public ZooKeeperTreeNode getNodeWithPath(String path) {
+        if (this.getZooKeeperPath().equals(path)) {
+            return this;
+        }
+
+        if (path.startsWith(this.getZooKeeperPath())) {
+            for (int i = 0; i < this.getChildCount(); i++) {
+                ZooKeeperTreeNode child = this.getChildAt(i);
+                ZooKeeperTreeNode result = child.getNodeWithPath(path);
+                if (result != null) {
+                    return result;
+                }
+            }
+        }
+
+        return null;
     }
 
     public String getPathName() {
@@ -61,14 +71,15 @@ public class ZooKeeperTreeNode extends DefaultMutableTreeNode {
     }
 
     public int getTotalChildCount() {
-        if (this.getChildCount() == 0) {
-            return this.getDirectChildCount();
-        }
-
         int result = 0;
 
+        if (this.getNodeDetails() != null && this.getNodeDetails().getChildren() != null) {
+            result += this.getNodeDetails().getChildren();
+        } else {
+            result += this.getChildCount();
+        }
+
         for (int i = 0; i < this.getChildCount(); i++) {
-            result++;
             result += this.getChildAt(i).getTotalChildCount();
         }
 
@@ -84,7 +95,7 @@ public class ZooKeeperTreeNode extends DefaultMutableTreeNode {
     }
 
     public boolean isFullyExplored() {
-        if (this.getChildCount() == 0 && this.getDirectChildCount() != 0) {
+        if (this.getNodeDetailsChildren() == null || this.getNodeDetailsChildren() != this.getChildCount()) {
             return false;
         }
 
@@ -100,9 +111,21 @@ public class ZooKeeperTreeNode extends DefaultMutableTreeNode {
     @Override
     public boolean isLeaf() {
         if (this.userObject == null) {
-            return true;
+            return false;
         }
 
-        return this.getNodeDetails().getChildren() == 0;
+        if (this.getChildCount() > 0) {
+            return false;
+        }
+
+        return this.getNodeDetailsChildren() == null || this.getNodeDetailsChildren() == 0;
+    }
+
+    private Integer getNodeDetailsChildren() {
+        if (this.getNodeDetails() == null) {
+            return null;
+        }
+
+        return this.getNodeDetails().getChildren();
     }
 }

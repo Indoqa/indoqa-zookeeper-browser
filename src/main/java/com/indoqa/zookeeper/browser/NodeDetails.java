@@ -21,11 +21,17 @@ import java.util.Date;
 public class NodeDetails {
 
     private String path;
-    private int children;
+    private Integer children;
     private int version;
     private int cversion;
     private Date created;
     private Date modified;
+
+    public static NodeDetails withPath(String path) {
+        NodeDetails result = new NodeDetails();
+        result.setPath(path);
+        return result;
+    }
 
     @Override
     public boolean equals(Object obj) {
@@ -49,7 +55,7 @@ public class NodeDetails {
         return true;
     }
 
-    public int getChildren() {
+    public Integer getChildren() {
         return this.children;
     }
 
@@ -81,7 +87,7 @@ public class NodeDetails {
         return result;
     }
 
-    public void setChildren(int children) {
+    public void setChildren(Integer children) {
         this.children = children;
     }
 

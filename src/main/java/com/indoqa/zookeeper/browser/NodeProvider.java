@@ -20,16 +20,28 @@ import java.util.List;
 
 public interface NodeProvider {
 
+    void connectTo(String zookeeperHost);
+
     void createChild(String path, String name);
 
     void deleteNode(String path);
 
-    List<ZooKeeperTreeNode> getChildren(String zooKeeperPath);
+    void deleteNodeRecursively(String path);
+
+    void disconnect();
+
+    List<ZooKeeperTreeNode> getChildren(ZooKeeperTreeNode node, int maxCount);
+
+    ConnectionState getConnectionState();
 
     byte[] getContent(String path);
 
     ZooKeeperTreeNode getNode(String path);
 
+    String getZookeeperHost();
+
     void setContent(String path, byte[] bytes);
+
+    void updateNodeStats(ZooKeeperTreeNode node);
 
 }
