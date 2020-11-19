@@ -257,7 +257,38 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         this.buildChildren(node);
     }
 
-    public void updateContent() {
+    @Override
+    public void valueChanged(TreeSelectionEvent e) {
+        TreePath selectionPath = this.tree.getSelectionPath();
+        if (selectionPath == null) {
+            this.setSelectedZookeeperPath(null);
+        } else {
+            ZooKeeperTreeNode node = (ZooKeeperTreeNode) selectionPath.getLastPathComponent();
+            this.setSelectedZookeeperPath(node.getZooKeeperPath());
+        }
+
+        this.loadSelectedContent();
+    }
+
+    protected void autoUpdate() {
+        if (this.autoUpdate) {
+            try {
+                this.updateContent();
+            } catch (Exception e) {
+                this.logger.error("Auto-Update failed", e);
+            }
+        }
+    }
+
+    protected void disconnect() {
+        ZooKeeperBrowserViewer.this.nodeProvider.disconnect();
+    }
+
+    protected void toggleAutoUpdate() {
+        this.autoUpdate = !this.autoUpdate;
+    }
+
+    protected void updateContent() {
         if (SwingUtilities.isEventDispatchThread()) {
             new Thread(this::updateContent).start();
             return;
@@ -294,37 +325,6 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
 
             this.operationCompleted(Operation.LOAD_CHILDREN, "/");
         }
-    }
-
-    @Override
-    public void valueChanged(TreeSelectionEvent e) {
-        TreePath selectionPath = this.tree.getSelectionPath();
-        if (selectionPath == null) {
-            this.setSelectedZookeeperPath(null);
-        } else {
-            ZooKeeperTreeNode node = (ZooKeeperTreeNode) selectionPath.getLastPathComponent();
-            this.setSelectedZookeeperPath(node.getZooKeeperPath());
-        }
-
-        this.loadSelectedContent();
-    }
-
-    protected void autoUpdate() {
-        if (this.autoUpdate) {
-            try {
-                this.updateContent();
-            } catch (Exception e) {
-                this.logger.error("Auto-Update failed", e);
-            }
-        }
-    }
-
-    protected void disconnect() {
-        ZooKeeperBrowserViewer.this.nodeProvider.disconnect();
-    }
-
-    protected void toggleAutoUpdate() {
-        this.autoUpdate = !this.autoUpdate;
     }
 
     protected void updatePendingNodes() {
@@ -379,6 +379,10 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
             node.add(eachChild);
             this.pendingNodes.add(eachChild);
         }
+    }
+
+    private boolean canEditNode() {
+        return this.selectedZookeeperPath != null && this.canReload();
     }
 
     private boolean canReload() {
@@ -439,8 +443,8 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
 
         JPanel pnlButtons = new JPanel(new BorderLayout(6, 6));
         pnlButtons.setBorder(new EmptyBorder(6, 6, 6, 6));
-        pnlButtons.add(this.createButton("Reload", event -> this.loadSelectedContent(), this::hasSelectedPath), BorderLayout.WEST);
-        pnlButtons.add(this.createButton("Save", event -> this.saveContent(), this::hasSelectedPath), BorderLayout.EAST);
+        pnlButtons.add(this.createButton("Reload", event -> this.loadSelectedContent(), this::canEditNode), BorderLayout.WEST);
+        pnlButtons.add(this.createButton("Save", event -> this.saveContent(), this::canEditNode), BorderLayout.EAST);
         result.add(pnlButtons, BorderLayout.SOUTH);
 
         return result;
@@ -489,8 +493,8 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
 
         JPanel pnlButtons = new JPanel(new BorderLayout(6, 6));
         pnlButtons.setBorder(new EmptyBorder(6, 6, 6, 6));
-        pnlButtons.add(this.createButton("Delete", event -> this.deleteNode(), this::hasSelectedPath), BorderLayout.WEST);
-        pnlButtons.add(this.createButton("New Child", event -> this.createNewNode(), this::hasSelectedPath), BorderLayout.EAST);
+        pnlButtons.add(this.createButton("Delete", event -> this.deleteNode(), this::canEditNode), BorderLayout.WEST);
+        pnlButtons.add(this.createButton("New Child", event -> this.createNewNode(), this::canEditNode), BorderLayout.EAST);
         result.add(pnlButtons, BorderLayout.SOUTH);
 
         return result;
@@ -512,12 +516,20 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
             return;
         }
 
-        if (panel.isRecursively()) {
+        this.doDeleteNode(panel.isRecursively());
+    }
+
+    private void doDeleteNode(boolean recursively) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            new Thread(() -> this.doDeleteNode(recursively)).start();
+            return;
+        }
+
+        if (recursively) {
             this.nodeProvider.deleteNodeRecursively(this.selectedZookeeperPath);
         } else {
             this.nodeProvider.deleteNode(this.selectedZookeeperPath);
         }
-
         this.updateContent();
     }
 
@@ -532,13 +544,10 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         this.resizeTree();
     }
 
-    private boolean hasSelectedPath() {
-        return this.selectedZookeeperPath != null;
-    }
-
     private void loadSelectedContent() {
         if (!SwingUtilities.isEventDispatchThread()) {
-            SwingUtilities.invokeLater(() -> this.loadSelectedContent());
+            SwingUtilities.invokeLater(this::loadSelectedContent);
+            return;
         }
 
         if (this.selectedZookeeperPath == null) {
@@ -580,7 +589,8 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
 
     private void resizeTree() {
         if (!SwingUtilities.isEventDispatchThread()) {
-            SwingUtilities.invokeLater(() -> this.resizeTree());
+            SwingUtilities.invokeLater(this::resizeTree);
+            return;
         }
 
         SwingUtilities.getAncestorOfClass(JPanel.class, this.tree).revalidate();

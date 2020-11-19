@@ -85,37 +85,11 @@ public class ZooKeeperBrowserMain implements Watcher, NodeProvider {
 
     @Override
     public void deleteNode(String path) {
-        for (int i = 0; i < MAX_DELETE_ATTEMPTS; i++) {
-            try {
-                this.zooKeeper.delete(path, -1);
-                return;
-            } catch (KeeperException.NoNodeException | InterruptedException e) {
-                // do nothing
-            } catch (Exception e) {
-                throw new ZooKeeperBrowserException(e.getMessage(), e);
-            }
-        }
-
-        throw new ZooKeeperBrowserException("Could not delete node '" + path + "' after " + MAX_DELETE_ATTEMPTS + " attempts.");
-    }
-
-    @Override
-    public void deleteNodeRecursively(String path) {
         this.viewer.operationStarted(Operation.DELETE_NODE, path);
 
         try {
             for (int i = 0; i < MAX_DELETE_ATTEMPTS; i++) {
                 try {
-                    List<String> children = this.zooKeeper.getChildren(path, false);
-
-                    for (String eachChild : children) {
-                        try {
-                            this.zooKeeper.delete(join(path, eachChild), -1);
-                        } catch (KeeperException.NoNodeException | InterruptedException e) {
-                            // do nothing
-                        }
-                    }
-
                     this.zooKeeper.delete(path, -1);
                     return;
                 } catch (KeeperException.NoNodeException | InterruptedException e) {
@@ -125,8 +99,18 @@ public class ZooKeeperBrowserMain implements Watcher, NodeProvider {
                 }
             }
 
-            throw new ZooKeeperBrowserException(
-                "Could not recursively delete node '" + path + "' after " + MAX_DELETE_ATTEMPTS + " attempts.");
+            throw new ZooKeeperBrowserException("Could not delete node '" + path + "' after " + MAX_DELETE_ATTEMPTS + " attempts.");
+        } finally {
+            this.viewer.operationCompleted(Operation.DELETE_NODE, path);
+        }
+    }
+
+    @Override
+    public void deleteNodeRecursively(String path) {
+        this.viewer.operationStarted(Operation.DELETE_NODE, path);
+
+        try {
+            this.deleteRecursively(path);
         } finally {
             this.viewer.operationCompleted(Operation.DELETE_NODE, path);
         }
@@ -290,6 +274,28 @@ public class ZooKeeperBrowserMain implements Watcher, NodeProvider {
 
     private ZooKeeperTreeNode createNode(String path) {
         return new ZooKeeperTreeNode(NodeDetails.withPath(path));
+    }
+
+    private void deleteRecursively(String path) {
+        for (int i = 0; i < MAX_DELETE_ATTEMPTS; i++) {
+            try {
+                List<String> children = this.zooKeeper.getChildren(path, false);
+
+                for (String eachChild : children) {
+                    this.deleteRecursively(join(path, eachChild));
+                }
+
+                this.zooKeeper.delete(path, -1);
+                return;
+            } catch (KeeperException.NoNodeException | InterruptedException e) {
+                // do nothing
+            } catch (Exception e) {
+                throw new ZooKeeperBrowserException(e.getMessage(), e);
+            }
+        }
+
+        throw new ZooKeeperBrowserException(
+            "Could not recursively delete node '" + path + "' after " + MAX_DELETE_ATTEMPTS + " attempts.");
     }
 
     private void setConnectionState(ConnectionState connectionState) {
