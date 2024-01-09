@@ -20,6 +20,7 @@ import static java.awt.event.InputEvent.SHIFT_MASK;
 
 import java.awt.*;
 import java.awt.event.*;
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -83,6 +84,8 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
     private ConnectionWatchDog watchDog;
     private JProgressBar pgrLoading;
     private Operation currentOperation;
+    private JFileChooser fileChooser;
+    private JTextField txtNodeDetails;
 
     public ZooKeeperBrowserViewer() {
         this.frame = new JFrame();
@@ -106,6 +109,8 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         this.frame.setLocationRelativeTo(null);
 
         this.frame.setVisible(true);
+
+        this.fileChooser = new JFileChooser();
 
         this.timer.schedule(new TimerTask() {
 
@@ -262,9 +267,16 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         TreePath selectionPath = this.tree.getSelectionPath();
         if (selectionPath == null) {
             this.setSelectedZookeeperPath(null);
+            this.txtNodeDetails.setText(null);
         } else {
             ZooKeeperTreeNode node = (ZooKeeperTreeNode) selectionPath.getLastPathComponent();
             this.setSelectedZookeeperPath(node.getZooKeeperPath());
+            NodeDetails nodeDetails = node.getNodeDetails();
+            String created = nodeDetails.getCreated().toInstant().toString();
+            String modified = nodeDetails.getModified().toInstant().toString();
+            this.txtNodeDetails.setText(
+                nodeDetails.getPath() + ", Created: " + created + ", Modified: " + modified + ", Version: "
+                    + nodeDetails.getVersion() + ", Children: " + nodeDetails.getChildren());
         }
 
         this.loadSelectedContent();
@@ -441,10 +453,20 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         this.textArea = new JTextArea();
         result.add(new JScrollPane(this.textArea), BorderLayout.CENTER);
 
-        JPanel pnlButtons = new JPanel(new BorderLayout(6, 6));
+        JPanel pnlButtons = new JPanel();
+        pnlButtons.setLayout(new BoxLayout(pnlButtons, BoxLayout.X_AXIS));
         pnlButtons.setBorder(new EmptyBorder(6, 6, 6, 6));
-        pnlButtons.add(this.createButton("Reload", event -> this.loadSelectedContent(), this::canEditNode), BorderLayout.WEST);
-        pnlButtons.add(this.createButton("Save", event -> this.saveContent(), this::canEditNode), BorderLayout.EAST);
+
+        pnlButtons.add(this.createButton("Reload", event -> this.loadSelectedContent(), this::canEditNode));
+        pnlButtons.add(Box.createHorizontalStrut(6));
+        pnlButtons.add(this.createButton("Download", event -> this.downloadSelectedContent(), this::canEditNode));
+        pnlButtons.add(Box.createHorizontalStrut(6));
+        this.txtNodeDetails = new JTextField();
+        this.txtNodeDetails.setEditable(false);
+        pnlButtons.add(this.txtNodeDetails);
+        pnlButtons.add(Box.createHorizontalGlue());
+        pnlButtons.add(Box.createHorizontalStrut(6));
+        pnlButtons.add(this.createButton("Save", event -> this.saveContent(), this::canEditNode));
         result.add(pnlButtons, BorderLayout.SOUTH);
 
         return result;
@@ -531,6 +553,36 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
             this.nodeProvider.deleteNode(this.selectedZookeeperPath);
         }
         this.updateContent();
+    }
+
+    private void downloadSelectedContent() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::downloadSelectedContent);
+            return;
+        }
+
+        if (this.selectedZookeeperPath == null) {
+            return;
+        }
+
+        String name = ZooKeeperTreeNode.getLastName(this.selectedZookeeperPath);
+        this.fileChooser.setSelectedFile(new File(name));
+        int result = this.fileChooser.showSaveDialog(this.frame);
+
+        if (result == JFileChooser.APPROVE_OPTION) {
+            Path path = this.fileChooser.getSelectedFile().toPath();
+            byte[] content = this.nodeProvider.getContent(this.selectedZookeeperPath);
+
+            try {
+                Files.write(path, content);
+            } catch (IOException e) {
+                JOptionPane.showMessageDialog(
+                    this.frame,
+                    "Failed to write file.",
+                    "Could not write file " + path + ": " + e.getMessage(),
+                    JOptionPane.ERROR_MESSAGE);
+            }
+        }
     }
 
     private void expandZooKeeperPath(String zooKeeperPath) {

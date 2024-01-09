@@ -26,7 +26,7 @@ public class ZooKeeperTreeNode extends DefaultMutableTreeNode {
         super(nodeDetails);
     }
 
-    private static String getLastName(String path) {
+    public static String getLastName(String path) {
         if (path == null) {
             return null;
         }
