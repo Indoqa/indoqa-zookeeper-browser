@@ -43,10 +43,7 @@ import javax.swing.event.TreeExpansionEvent;
 import javax.swing.event.TreeSelectionEvent;
 import javax.swing.event.TreeSelectionListener;
 import javax.swing.event.TreeWillExpandListener;
-import javax.swing.tree.DefaultMutableTreeNode;
-import javax.swing.tree.DefaultTreeModel;
-import javax.swing.tree.ExpandVetoException;
-import javax.swing.tree.TreePath;
+import javax.swing.tree.*;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -233,12 +230,11 @@ public class ZooKeeperBrowserViewer implements TreeWillExpandListener, TreeSelec
         this.componentEnablers.forEach(ComponentEnabler::update);
     }
 
-    @SuppressWarnings("unchecked")
     public void setExpandedZooKeeperPaths(Set<String> expandedPaths) {
         DefaultMutableTreeNode rootNode = (DefaultMutableTreeNode) this.tree.getModel().getRoot();
-        Enumeration<ZooKeeperTreeNode> nodes = rootNode.breadthFirstEnumeration();
+        Enumeration<TreeNode> nodes = rootNode.breadthFirstEnumeration();
         while (nodes.hasMoreElements()) {
-            ZooKeeperTreeNode treeNode = nodes.nextElement();
+            ZooKeeperTreeNode treeNode = (ZooKeeperTreeNode) nodes.nextElement();
 
             if (expandedPaths.contains(treeNode.getZooKeeperPath())) {
                 this.tree.expandPath(new TreePath(treeNode.getPath()));
